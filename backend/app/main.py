@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import duckdb
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import csv
 
@@ -299,6 +299,244 @@ def get_analysis(
         "daynight": daynight,
         "countries": countries,
     }
+
+# ===================== DATOS ARMONIZADOS =====================
+# data/harmonized/year=YYYY/*.parquet  (MODIS y VIIRS en un solo esquema:
+# latitude, longitude, acq_date, acq_time, instrument, satellite, confidence (h/n/l),
+# daynight, country, frp, type, version, pixel_area)
+HARMONIZED_PATH = DATA_PATH.parent / "harmonized"
+INSTRUMENT = "upper(CAST(instrument AS VARCHAR))"
+DAYNIGHT = "upper(CAST(daynight AS VARCHAR))"
+
+
+def h_files(year: int) -> list[str]:
+    d = HARMONIZED_PATH / f"year={year}"
+    return sorted(str(p) for p in d.rglob("*.parquet")) if d.exists() else []
+
+
+def h_source(year: int) -> str:
+    """Expresión SQL que lee todos los parquet armonizados de un año."""
+    files = h_files(year)
+    if not files:
+        raise HTTPException(404, f"No harmonized dataset for year {year} in {HARMONIZED_PATH}")
+    paths = ", ".join("'" + f.replace("'", "''") + "'" for f in files)  # rutas del servidor, no del usuario
+    return f"read_parquet([{paths}], union_by_name = true)"
+
+
+def h_filters(
+    country: str | None = None,
+    instrument: str | None = Query(None, description="MODIS o VIIRS. Si se omite, ambos"),
+    min_confidence: str = Query("low", description="low (todas) | nominal (nominal y alta) | high (solo alta)"),
+    fire_type: str = Query("all", description="all | vegetation (type = 0)"),
+    daynight: str | None = Query(None, description="D o N"),
+) -> dict:
+    """Filtros comunes a los endpoints armonizados -> condiciones SQL y parámetros."""
+    conds, params = [], []
+    if country:
+        conds.append("country = ?")
+        params.append(country)
+    if instrument:
+        instrument = instrument.upper()
+        if instrument not in SENSORS:
+            raise HTTPException(400, "Invalid instrument")
+        conds.append(f"{INSTRUMENT} = ?")
+        params.append(instrument)
+    if min_confidence == "nominal":
+        conds.append(f"{_conf_sql()} IN ('nominal', 'high')")
+    elif min_confidence == "high":
+        conds.append(f"{_conf_sql()} = 'high'")
+    elif min_confidence != "low":
+        raise HTTPException(400, "Invalid min_confidence")
+    if fire_type == "vegetation":
+        conds.append('"type" = 0')
+    elif fire_type != "all":
+        raise HTTPException(400, "Invalid fire_type")
+    if daynight:
+        daynight = daynight.upper()
+        if daynight not in ("D", "N"):
+            raise HTTPException(400, "Invalid daynight")
+        conds.append(f"{DAYNIGHT} = ?")
+        params.append(daynight)
+    return {
+        "sql": "".join(f" AND {c}" for c in conds),
+        "params": params,
+        "country": country,
+        "instrument": instrument,
+    }
+
+
+def _check_period(year: int, month: int | None) -> None:
+    if month is not None and not 1 <= month <= 12:
+        raise HTTPException(400, "Invalid month")
+    if not 2000 <= year <= 2025:
+        raise HTTPException(400, "Invalid year")
+
+
+@app.get("/harmonized/years")
+def harmonized_years():
+    years = sorted(
+        int(p.name.split("=", 1)[1])
+        for p in HARMONIZED_PATH.glob("year=*")
+        if p.is_dir() and p.name.split("=", 1)[1].isdigit() and any(p.rglob("*.parquet"))
+    )
+    if not years:
+        raise HTTPException(404, f"No harmonized datasets in {HARMONIZED_PATH}")
+    return {"years": years}
+
+
+@app.get("/harmonized/fires")
+def harmonized_fires(
+    year: int,
+    month: int | None = Query(None, description="1-12. Si se omite, todo el año"),
+    limit: int = 1000,
+    offset: int = 0,
+    f: dict = Depends(h_filters),
+):
+    _check_period(year, month)
+    if not 1 <= limit <= 10000 or offset < 0:
+        raise HTTPException(400, "Invalid pagination")
+
+    src = h_source(year)
+    start, end = period_dates(year, month)
+    where = f"WHERE acq_date >= ? AND acq_date < ?{f['sql']}"
+    params = [start, end] + f["params"]
+
+    with duckdb.connect() as con:
+        total = con.execute(f"SELECT COUNT(*) FROM {src} {where}", params).fetchone()[0]
+        df = con.execute(
+            f"SELECT * REPLACE (CAST(CAST(acq_date AS DATE) AS VARCHAR) AS acq_date) FROM {src} {where} "
+            "ORDER BY acq_date, acq_time LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchdf()
+
+    records = json.loads(df.to_json(orient="records"))
+    return {
+        "sensor": f["instrument"] or "MODIS + VIIRS",
+        "year": year,
+        "month": month,
+        "total": total,
+        "count": len(records),
+        "limit": limit,
+        "offset": offset,
+        "data": records,
+    }
+
+
+@app.get("/harmonized/calendar")
+def harmonized_calendar(year: int, month: int, f: dict = Depends(h_filters)):
+    """Detecciones por día con desglose por instrumento, confianza homologada,
+    FRP, área de píxel (km²) y día/noche, aplicando los filtros armonizados."""
+    _check_period(year, month)
+    src = h_source(year)
+    start, end = period_dates(year, month)
+
+    query = f"""
+        SELECT CAST(d AS VARCHAR),
+               COUNT(*) FILTER (WHERE {INSTRUMENT} = 'MODIS'),
+               COUNT(*) FILTER (WHERE {INSTRUMENT} = 'VIIRS'),
+               COUNT(*) FILTER (WHERE conf = 'high'),
+               COUNT(*) FILTER (WHERE conf = 'nominal'),
+               COUNT(*) FILTER (WHERE conf = 'low'),
+               COALESCE(SUM(frp), 0),
+               COALESCE(SUM(pixel_area), 0),
+               COUNT(*) FILTER (WHERE {DAYNIGHT} = 'D'),
+               COUNT(*) FILTER (WHERE {DAYNIGHT} = 'N')
+        FROM (SELECT *, CAST(acq_date AS DATE) AS d, {_conf_sql()} AS conf FROM {src}
+              WHERE acq_date >= ? AND acq_date < ?{f['sql']})
+        GROUP BY d ORDER BY d
+    """
+    with duckdb.connect() as con:
+        rows = con.execute(query, [start, end] + f["params"]).fetchall()
+        sensors = [r[0] for r in con.execute(f"SELECT DISTINCT {INSTRUMENT} FROM {src}").fetchall() if r[0] in SENSORS]
+
+    days = [
+        {
+            "date": day, "modis": int(m), "viirs": int(v), "total": int(m) + int(v),
+            "high": int(hi), "nominal": int(no), "low": int(lo),
+            "frp": round(float(frp), 1), "area": round(float(area), 1),
+            "day": int(dd), "night": int(nn),
+        }
+        for day, m, v, hi, no, lo, frp, area, dd, nn in rows
+    ]
+    return {
+        "year": year, "month": month, "country": f["country"], "sensors": sorted(sensors),
+        "total": sum(d["total"] for d in days), "days": days,
+    }
+
+
+@app.get("/harmonized/analysis")
+def harmonized_analysis(
+    year: int,
+    month: int | None = Query(None, description="1-12. Si se omite, el periodo es todo el año"),
+    f: dict = Depends(h_filters),
+):
+    """Misma estructura que /analysis, más satélites, tipo de fuente y área de píxel."""
+    _check_period(year, month)
+    src = h_source(year)
+    start, end = period_dates(year, month)
+    ystart, yend = period_dates(year, None)
+    extra, fp = f["sql"], f["params"]
+    period = f"d >= ? AND d < ?{extra}"
+
+    with duckdb.connect() as con:
+        con.execute(
+            f"CREATE TEMP VIEW t AS SELECT CAST(acq_date AS DATE) AS d, {INSTRUMENT} AS sensor, "
+            f"instrument, satellite, \"type\", country, frp, pixel_area, daynight, confidence, "
+            f"{_conf_sql()} AS conf FROM {src}"
+        )
+        q = lambda sql, p: con.execute(sql, p).fetchall()
+        available = sorted(r[0] for r in q("SELECT DISTINCT sensor FROM t", []) if r[0] in SENSORS)
+
+        daily_rows = q(f"SELECT CAST(d AS VARCHAR), sensor, COUNT(*), COALESCE(SUM(frp), 0), COALESCE(SUM(pixel_area), 0) "
+                       f"FROM t WHERE {period} GROUP BY d, sensor ORDER BY d", [start, end] + fp)
+        monthly_rows = q(f"SELECT month(d), sensor, COUNT(*) FROM t WHERE {period} GROUP BY 1, 2", [ystart, yend] + fp)
+        conf_rows = q(f"SELECT sensor, conf, COUNT(*) FROM t WHERE {period} GROUP BY 1, 2", [start, end] + fp)
+        dn_rows = q(f"SELECT sensor, upper(CAST(daynight AS VARCHAR)), COUNT(*) FROM t WHERE {period} GROUP BY 1, 2", [start, end] + fp)
+        sat_rows = q(f"SELECT sensor, satellite, COUNT(*) FROM t WHERE {period} GROUP BY 1, 2 ORDER BY 3 DESC", [start, end] + fp)
+        type_rows = q(f'SELECT sensor, "type", COUNT(*) FROM t WHERE {period} GROUP BY 1, 2 ORDER BY 2', [start, end] + fp)
+        country_rows = [] if f["country"] else q(
+            f"SELECT country, sensor, COUNT(*) FROM t WHERE {period} AND country IS NOT NULL GROUP BY 1, 2", [start, end] + fp)
+
+    daily, area = {}, {s: 0.0 for s in available}
+    for day, sensor, n, frp, a in daily_rows:
+        if sensor not in SENSORS:
+            continue
+        e = daily.setdefault(day, {"date": day, "modis": 0, "viirs": 0, "frp_modis": 0.0, "frp_viirs": 0.0})
+        k = sensor.lower()
+        e[k] = int(n)
+        e[f"frp_{k}"] = round(float(frp), 1)
+        area[sensor] = area.get(sensor, 0.0) + float(a)
+
+    monthly = [{"month": m, "modis": 0, "viirs": 0} for m in range(1, 13)]
+    for m, sensor, n in monthly_rows:
+        if sensor in SENSORS:
+            monthly[int(m) - 1][sensor.lower()] = int(n)
+
+    confidence = {s: {"low": 0, "nominal": 0, "high": 0, "unknown": 0} for s in available}
+    for sensor, level, n in conf_rows:
+        if sensor in confidence:
+            confidence[sensor][level] = int(n)
+
+    daynight = {s: {"D": 0, "N": 0, "other": 0} for s in available}
+    for sensor, v, n in dn_rows:
+        if sensor in daynight:
+            daynight[sensor][v if v in ("D", "N") else "other"] += int(n)
+
+    by_country = {}
+    for name, sensor, n in country_rows:
+        if sensor in SENSORS:
+            by_country.setdefault(name, {"country": name, "modis": 0, "viirs": 0})[sensor.lower()] = int(n)
+    countries = sorted(by_country.values(), key=lambda c: c["modis"] + c["viirs"], reverse=True)
+
+    return {
+        "year": year, "month": month, "country": f["country"], "sensors": available,
+        "daily": list(daily.values()), "monthly": monthly, "confidence": confidence,
+        "daynight": daynight, "countries": countries,
+        "satellites": [{"instrument": s, "satellite": sat, "count": int(n)} for s, sat, n in sat_rows if s in SENSORS],
+        "types": [{"instrument": s, "type": int(t), "count": int(n)} for s, t, n in type_rows if s in SENSORS and t is not None],
+        "area_km2": {s: round(v, 1) for s, v in area.items()},
+    }
+
 
 COUNTRIES_FILE = Path(__file__).resolve().parents[2] / "data" / "countries.csv"
 
