@@ -92,19 +92,33 @@
         .h-col { display: none; } body.harmonized .h-col { display: table-cell; }
         .h-block { display: none; } body.harmonized .h-block { display: block; }
         body.harmonized #sensor, body.harmonized #cal_sensor { display: none; }
+
+        .chart-tools { display: flex; gap: 6px; margin: 0 0 8px; }
+        .chart-tools button { padding: 4px 10px; font-size: 12px; }
+        .matrix { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+        .matrix th { background: none; color: #222; padding: 2px 6px; font-weight: bold; position: static; text-align: center; border: 0; }
+        .matrix td { min-width: 46px; height: 26px; padding: 0 4px; text-align: center; border: 2px solid transparent; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+        .matrix td:hover { border-color: #555; }
+        .matrix td.sel { border-color: #000; }
+        .matrix td.part { border-style: dashed; border-color: #888; }
+        .matrix td.nodata { background: #eee; cursor: default; }
+        .matrix td.total { background: #f4f4f4; font-weight: bold; cursor: default; }
+        .matrix.weeks td { min-width: 13px; height: 18px; padding: 0; }
+        .matrix.weeks th { padding: 0 1px; font-size: 10px; }
+        .chip { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+        .badge { display: inline-block; padding: 5px 14px; border-radius: 16px; font-weight: bold; font-size: 14px; }
+        .kv { width: 100%; }
+        .kv td { padding: 6px 8px; white-space: normal; }
+        .ser-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
     </style>
 </head>
 
-<body>
+<body class="harmonized">
     <h1>Visual Fire</h1>
     <p>Detecciones satelitales de incendios (MODIS + VIIRS)</p>
 
     <div class="controls source-bar">
-        <label for="source">Fuente de datos:</label>
-        <select id="source">
-            <option value="processed">Procesados (por sensor)</option>
-            <option value="harmonized">Armonizados (MODIS + VIIRS)</option>
-        </select>
+        <strong>Datos armonizados (MODIS + VIIRS):</strong>
         <select id="h_conf" class="h-only" title="Confianza mínima homologada (h / n / l)">
             <option value="low">Cualquier confianza</option>
             <option value="nominal">Nominal o alta</option>
@@ -116,19 +130,18 @@
             <option value="N">Solo noche</option>
         </select>
     </div>
-    <div class="hint" id="sourceHint"></div>
 
     <nav class="tabs">
         <button class="tab active" data-tab="tabMapa">Mapa y tabla</button>
         <button class="tab" data-tab="tabCal">Calendario y gráficas</button>
+        <button class="tab" data-tab="tabSerie">Series históricas y anomalías</button>
     </nav>
 
     <section id="tabMapa" class="tab-panel">
 
     <div class="controls">
         <select id="sensor">
-            <option value="MODIS">MODIS</option>
-            <option value="VIIRS">VIIRS</option>
+            <option value="ALL">MODIS + VIIRS</option>
         </select>
 
         <select id="year"></select>
@@ -171,6 +184,7 @@
         <button id="prevButton" disabled>← Anterior</button>
         <span id="pageInfo"></span>
         <button id="nextButton" disabled>Siguiente →</button>
+        <button id="downloadFiresCsv" disabled title="Descarga todas las filas de la consulta, no solo la página visible">⬇ Descargar CSV (todos los resultados)</button>
     </div>
 
     <div class="table-container" id="tableContainer">
@@ -201,8 +215,7 @@
 
     <div class="controls">
         <select id="cal_sensor">
-            <option value="modis">MODIS</option>
-            <option value="viirs">VIIRS</option>
+            <option value="both">MODIS + VIIRS</option>
         </select>
 
         <select id="cal_year"></select>
@@ -234,6 +247,7 @@
         <button id="cal_prevButton">← Mes</button>
         <button id="cal_nextButton">Mes →</button>
         <button id="cal_searchButton">Consultar datos</button>
+        <button id="cal_csvButton">⬇ CSV del calendario</button>
     </div>
 
     <div id="cal_status">Esperando consulta...</div>
@@ -241,8 +255,7 @@
 
     <div class="layout">
         <div class="calendar">
-            <p class="calendar-title" id="calendarTitle"></p>
-            <div class="grid" id="calendarGrid"></div>
+            <div id="calendarsWrap"></div>
             <div class="legend">
                 <span>Menos</span><div class="bar"></div><span>Más detecciones</span>
             </div>
@@ -297,13 +310,70 @@
             <h3>Detecciones por satélite</h3>
             <div class="chart-box"><canvas id="chartSat"></canvas></div>
         </div>
-        <div class="chart-card h-block">
-            <h3>Tipo de fuente</h3>
-            <div class="chart-box"><canvas id="chartType"></canvas></div>
-            <p class="chart-note">0 vegetación · 1 volcán activo · 2 fuente estática · 3 mar abierto.</p>
-        </div>
     </div>
 
+    </section>
+
+    
+    <section id="tabSerie" class="tab-panel" hidden>
+        <div class="controls">
+            <select id="ser_zone">
+                <option value="country">Zona: país (o todo el mundo)</option>
+                <option value="map">Zona: vista actual del mapa</option>
+            </select>
+            <input id="ser_country" list="countryList" type="text" placeholder="País (vacío = todo el mundo)">
+            <select id="ser_sensor" title="Con un solo sensor la serie es comparable entre años">
+                <option value="MODIS">Sensor: MODIS (serie consistente 2000 → hoy)</option>
+                <option value="VIIRS">Sensor: VIIRS</option>
+                <option value="">Sensor: MODIS + VIIRS (mezcla épocas)</option>
+            </select>
+            <select id="ser_metric">
+                <option value="n">Métrica: detecciones</option>
+                <option value="high">Métrica: confianza alta</option>
+                <option value="frp">Métrica: FRP total (MW)</option>
+                <option value="area">Métrica: área de píxeles (km²)</option>
+            </select>
+            <select id="ser_res">
+                <option value="months">Matriz: años × meses</option>
+                <option value="weeks">Matriz: años × semanas</option>
+            </select>
+            <select id="ser_color">
+                <option value="value">Colorear por valor</option>
+                <option value="anom">Colorear por anomalía (× mediana)</option>
+                <option value="sem">Colorear por semáforo</option>
+            </select>
+            <button id="ser_load">Calcular serie 2000 → hoy</button>
+            <button id="ser_csv">⬇ CSV de la matriz</button>
+        </div>
+        <div id="ser_status">Elige la zona y presiona "Calcular serie". Los filtros de confianza y día/noche de la barra superior también aplican.</div>
+        <div class="hint">Ojo: MODIS cubre desde nov-2000 y VIIRS desde 2012; al sumarse VIIRS los conteos suben por su mayor resolución. Para comparar entre épocas conviene FRP o área de píxeles.</div>
+        <div class="hint" id="ser_summary"></div>
+
+        <div class="calendar" style="overflow-x:auto; flex: none;">
+            <div id="ser_matrix"></div>
+            <div class="hint" id="ser_legend"></div>
+        </div>
+
+        <h2 class="section-title">Mes seleccionado vs. mediana histórica</h2>
+        <div class="controls">
+            <select id="ser_year"></select>
+            <select id="ser_month">
+                <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option>
+                <option value="4">Abril</option><option value="5">Mayo</option><option value="6">Junio</option>
+                <option value="7">Julio</option><option value="8">Agosto</option><option value="9">Septiembre</option>
+                <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+            </select>
+        </div>
+        <div class="hint">También puedes hacer clic en cualquier celda de la matriz. Si el mes elegido es el último con datos, se compara "a la fecha" (mismos días en todos los años).</div>
+
+        <div class="ser-grid">
+            <div class="chart-card" id="ser_cmp">Calcula la serie para ver la comparación.</div>
+            <div class="chart-card">
+                <h3>Mismo mes en cada año vs. mediana histórica</h3>
+                <div class="chart-tools"><button id="ser_png1">⬇ PNG</button><button id="ser_csv1">⬇ CSV</button></div>
+                <div class="chart-box"><canvas id="ser_chartMonth"></canvas></div>
+            </div>
+        </div>
     </section>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -312,8 +382,56 @@
         // ---- Fuente de datos (procesados / armonizados) ----
         const TYPE_LABELS = { 0: "Vegetación", 1: "Volcán activo", 2: "Fuente estática", 3: "Mar abierto" };
         const typeLabel = t => t == null ? null : `${t} · ${TYPE_LABELS[t] ?? "Otro"}`;
-        const isH = () => document.getElementById("source").value === "harmonized";
+        const isH = () => true;   // la página solo trabaja con datos armonizados
         let H_YEARS = null;   // años disponibles en data/harmonized
+
+        function csvCell(v) {
+            if (v == null) return "";
+            const t = String(v);
+            return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+        }
+
+        function downloadBlob(blob, filename) {
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        }
+
+        function downloadCSV(filename, header, rows) {
+            const text = [header, ...rows].map(r => r.map(csvCell).join(",")).join("\r\n");
+            downloadBlob(new Blob(["\ufeff" + text], { type: "text/csv;charset=utf-8" }), filename);   // BOM: Excel respeta acentos
+        }
+
+        function exportChartPNG(chart, title, subtitle, filename) {
+            const canvas = chart.canvas;
+            const ratio = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1;
+            const head = Math.round(56 * ratio);
+            const out = document.createElement("canvas");
+            out.width = canvas.width;
+            out.height = canvas.height + head;
+            const g = out.getContext("2d");
+            g.fillStyle = "#fff";
+            g.fillRect(0, 0, out.width, out.height);
+            g.fillStyle = "#222";
+            g.font = `bold ${Math.round(16 * ratio)}px Arial`;
+            g.fillText(title, 12 * ratio, 24 * ratio, out.width - 24 * ratio);
+            g.fillStyle = "#666";
+            g.font = `${Math.round(12 * ratio)}px Arial`;
+            g.fillText(subtitle, 12 * ratio, 44 * ratio, out.width - 24 * ratio);
+            g.drawImage(canvas, 0, head);
+            out.toBlob(b => downloadBlob(b, filename), "image/png");
+        }
+
+        function exportChartCSV(chart, filename, labelHeader) {
+            const sets = chart.data.datasets;
+            const header = [labelHeader, ...sets.map(d => d.label ?? "valor")];
+            const rows = (chart.data.labels ?? []).map((l, i) => [l, ...sets.map(d => d.data[i])]);
+            downloadCSV(filename, header, rows);
+        }
 
         async function apiError(response) {
             let detail = "";
@@ -356,6 +474,8 @@
         const searchButton = document.getElementById("searchButton");
         const prevButton = document.getElementById("prevButton");
         const nextButton = document.getElementById("nextButton");
+        const downloadFiresCsv = document.getElementById("downloadFiresCsv");
+        let lastCsvUrl = null;
         const pageInfo = document.getElementById("pageInfo");
         const statusBox = document.getElementById("status");
         const dataTable = document.getElementById("dataTable");
@@ -533,6 +653,7 @@
             capaIncendios.clearLayers();
             selected = null;
             prevButton.disabled = nextButton.disabled = true;
+            downloadFiresCsv.disabled = true;
 
             try {
                 const response = await fetch(url);
@@ -543,6 +664,10 @@
 
                 const result = await response.json();
                 total = result.total;
+                const csvUrl = new URL(`${API_URL}/harmonized/fires.csv`);
+                url.searchParams.forEach((v, k) => { if (k !== "limit" && k !== "offset") csvUrl.searchParams.set(k, v); });
+                lastCsvUrl = csvUrl.toString();
+                downloadFiresCsv.disabled = total === 0;
 
                 const periodo = result.month ? `${monthSelect.selectedOptions[0].text} ${result.year}` : `${result.year}`;
                 statusBox.textContent = total === 0
@@ -640,6 +765,14 @@
         fillYears();
         loadCountries();
 
+        downloadFiresCsv.addEventListener("click", () => {
+            if (!lastCsvUrl) return;
+            if (total > 1000000 && !confirm(`La consulta tiene ${total.toLocaleString("es-MX")} filas; la descarga puede tardar y pesar cientos de MB. ¿Continuar?`)) return;
+            const a = document.createElement("a");
+            a.href = lastCsvUrl;   // la API transmite el archivo y el navegador lo guarda
+            a.click();
+        });
+
         document.addEventListener("sourcechange", () => {
             sensorSelect.innerHTML = isH()
                 ? '<option value="ALL">MODIS + VIIRS</option>'
@@ -662,13 +795,13 @@
         const nextButton = document.getElementById("cal_nextButton");
         const status = document.getElementById("cal_status");
         const notice = document.getElementById("notice");
-        const calendarTitle = document.getElementById("calendarTitle");
-        const calendarGrid = document.getElementById("calendarGrid");
+        const calendarsWrap = document.getElementById("calendarsWrap");
         const detail = document.getElementById("detail");
         const metricSelect = document.getElementById("cal_metric");
         const METRIC_LABEL = { count: "detecciones", high: "detecciones de confianza alta", frp: "MW de FRP", area: "km² de píxeles" };
 
-        let lastResult = null;   // última respuesta de la API
+        let lastResults = [];   // una respuesta de la API por año consultado
+        let failedYears = [];
         let selectedDate = null;
 
         for (let y = LAST_YEAR; y >= FIRST_YEAR; y--) yearSelect.add(new Option(y, y));
@@ -685,83 +818,103 @@
             return mode === "modis" ? d.modis : mode === "viirs" ? d.viirs : d.total;
         }
 
-        // Consultar API
-        async function getCalendar() {
+        function countryParam() {
+            return countryInput.value.trim().toLowerCase().split(/\s+/)
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1)).join("_");
+        }
+
+        async function fetchYear(year, country) {
             const url = new URL(`${API_URL}${isH() ? "/harmonized/calendar" : "/calendar"}`);
             if (isH()) addHFilters(url);
-            url.searchParams.set("year", yearSelect.value);
+            url.searchParams.set("year", year);
             url.searchParams.set("month", monthSelect.value);
+            if (country) url.searchParams.set("country", country);
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(await apiError(response));
+            return response.json();
+        }
 
-            let countryValue = countryInput.value.trim();
-
-            countryValue = countryValue.toLowerCase()
-                                        .split(/\s+/)
-                                        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                                        .join("_");
-
-            if (countryValue) url.searchParams.set("country", countryValue);
-
+        // Consultar API (año principal + años a comparar, en paralelo)
+        async function getCalendar() {
+            const years = [Number(yearSelect.value)];
             status.textContent = "Consultando datos...";
             notice.textContent = "";
 
-            try {
-                const response = await fetch(url);
+            const country = countryParam();
+            const settled = await Promise.allSettled(years.map(y => fetchYear(y, country)));
 
-                if (!response.ok) {
-                    throw new Error(await apiError(response));
-                }
+            lastResults = [];
+            failedYears = [];
+            settled.forEach((r, i) => {
+                if (r.status === "fulfilled") lastResults.push(r.value);
+                else { failedYears.push(`${years[i]}: ${r.reason.message}`); console.error(r.reason); }
+            });
+            selectedDate = null;
 
-                lastResult = await response.json();
-                selectedDate = null;
-                render();
-
-            } catch (error) {
-                status.textContent = `No se pudieron obtener los datos: ${error.message}`;
-                console.error(error);
+            if (!lastResults.length) {
+                calendarsWrap.innerHTML = "";
+                status.textContent = `No se pudieron obtener los datos: ${failedYears.join(" · ")}`;
+                return;
             }
+            render();
         }
 
         function render() {
-            const result = lastResult;
-            if (!result) return;
+            if (!lastResults.length) return;
 
-            const year = Number(result.year), month = Number(result.month);
-            const byDate = Object.fromEntries(result.days.map(d => [String(d.date).slice(0, 10), d]));
             const monthName = monthSelect.selectedOptions[0].text;
+            const metric = isH() ? metricSelect.value : "count";
+            const byDate = {};
+            lastResults.forEach(r => r.days.forEach(d => { byDate[String(d.date).slice(0, 10)] = d; }));
+            const maxValue = Math.max(1, ...Object.values(byDate).map(dayValue));   // misma escala de color para todos los años
 
             // Resumen
-            const modisTotal = result.days.reduce((s, d) => s + d.modis, 0);
-            const viirsTotal = result.days.reduce((s, d) => s + d.viirs, 0);
-            const shown = result.days.reduce((s, d) => s + dayValue(d), 0);
+            const sumOf = r => r.days.reduce((s, d) => s + dayValue(d), 0);
+            const r = lastResults[0];
+            const modisTotal = r.days.reduce((s, d) => s + d.modis, 0);
+            const viirsTotal = r.days.reduce((s, d) => s + d.viirs, 0);
             status.textContent =
-                `${fmt(shown)} ${METRIC_LABEL[isH() ? metricSelect.value : "count"]} en ${monthName} ${year} ` +
+                `${fmt(sumOf(r))} ${METRIC_LABEL[metric]} en ${monthName} ${r.year} ` +
                 `(MODIS: ${fmt(modisTotal)} · VIIRS: ${fmt(viirsTotal)}).`;
 
-            // Aviso si falta un sensor ese año
-            const missing = ["MODIS", "VIIRS"].filter(s => !result.sensors.includes(s));
-            if (missing.length) {
-                notice.textContent = `${missing.join(" y ")} no tiene datos en ${year}; el calendario muestra solo ${result.sensors.join(" y ")}.`;
-            }
+            // Avisos: sensor sin datos en algún año, o años que fallaron
+            const notes = lastResults.flatMap(r =>
+                ["MODIS", "VIIRS"].filter(s => !r.sensors.includes(s)).map(s => `${s} no tiene datos en ${r.year}`));
+            failedYears.forEach(f => notes.push(`No se pudo consultar ${f}`));
+            notice.textContent = notes.join(". ");
 
-            calendarTitle.textContent = `${monthName} ${year}`;
-            calendarGrid.innerHTML = "";
+            calendarsWrap.innerHTML = "";
+            lastResults.forEach(r => calendarsWrap.appendChild(buildMonth(r, monthName, byDate, maxValue)));
+
+            if (selectedDate) showDetail(selectedDate, byDate[selectedDate]);
+        }
+
+        function buildMonth(result, monthName, byDate, maxValue) {
+            const year = Number(result.year), month = Number(result.month);
+
+            const box = document.createElement("div");
+            const title = document.createElement("p");
+            title.className = "calendar-title";
+            title.textContent = `${monthName} ${year}`;
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            box.append(title, grid);
 
             WEEKDAYS.forEach(w => {
                 const h = document.createElement("div");
                 h.className = "weekday";
                 h.textContent = w;
-                calendarGrid.appendChild(h);
+                grid.appendChild(h);
             });
 
             // Lunes = 0
             const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
             const daysInMonth = new Date(year, month, 0).getDate();
-            const maxValue = Math.max(1, ...result.days.map(dayValue));
 
             for (let i = 0; i < firstWeekday; i++) {
                 const empty = document.createElement("div");
                 empty.className = "day empty";
-                calendarGrid.appendChild(empty);
+                grid.appendChild(empty);
             }
 
             for (let day = 1; day <= daysInMonth; day++) {
@@ -787,10 +940,9 @@
 
                 cell.append(num, count);
                 cell.addEventListener("click", () => { selectedDate = date; render(); showDetail(date, data); });
-                calendarGrid.appendChild(cell);
+                grid.appendChild(cell);
             }
-
-            if (selectedDate) showDetail(selectedDate, byDate[selectedDate]);
+            return box;
         }
 
         function showDetail(date, data) {
@@ -827,6 +979,68 @@
         prevButton.addEventListener("click", () => shiftMonth(-1));
         nextButton.addEventListener("click", () => shiftMonth(1));
         sensorSelect.addEventListener("change", render);   // el cambio de sensor no requiere nueva consulta
+
+        // ---- Descargas ----
+        document.getElementById("cal_csvButton").addEventListener("click", () => {
+            if (!lastResults.length) { alert("Primero consulta el calendario."); return; }
+            const header = ["fecha", "modis", "viirs", "total", "confianza_alta", "confianza_nominal", "confianza_baja",
+                            "frp_total_mw", "area_pixeles_km2", "dia", "noche"];
+            const rows = lastResults.flatMap(r => r.days.map(d =>
+                [String(d.date).slice(0, 10), d.modis, d.viirs, d.total, d.high, d.nominal, d.low, d.frp, d.area, d.day, d.night]));
+            rows.sort((a, b) => a[0].localeCompare(b[0]));
+            const years = lastResults.map(r => r.year).sort().join("-");
+            downloadCSV(`firescope_calendario_${years}_mes${String(monthSelect.value).padStart(2, "0")}.csv`, header, rows);
+        });
+
+        const slug = t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
+        const chartFileName = (card, ext) => `firescope_${slug(card.querySelector("h3").textContent)}_${yearSelect.value}.${ext}`;
+
+        function chartPNG(card) {
+            const canvas = card.querySelector("canvas");
+            if (!charts[canvas.id]) { alert("Primero genera las gráficas."); return; }
+            const ratio = canvas.clientWidth ? canvas.width / canvas.clientWidth : 1;
+            const head = Math.round(56 * ratio);
+            const out = document.createElement("canvas");
+            out.width = canvas.width;
+            out.height = canvas.height + head;
+            const ctx = out.getContext("2d");
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(0, 0, out.width, out.height);
+            ctx.fillStyle = "#222";
+            ctx.font = `bold ${Math.round(16 * ratio)}px Arial`;
+            ctx.fillText(card.querySelector("h3").textContent, 12 * ratio, 24 * ratio, out.width - 24 * ratio);
+            ctx.fillStyle = "#666";
+            ctx.font = `${Math.round(12 * ratio)}px Arial`;
+            ctx.fillText(analysisStatus.textContent, 12 * ratio, 44 * ratio, out.width - 24 * ratio);
+            ctx.drawImage(canvas, 0, head);
+            out.toBlob(b => downloadBlob(b, chartFileName(card, "png")), "image/png");
+        }
+
+        function chartCSV(card) {
+            const chart = charts[card.querySelector("canvas").id];
+            if (!chart) { alert("Primero genera las gráficas."); return; }
+            // En las series diarias la etiqueta corta es el día; el tooltip trae la fecha completa
+            const titleFn = chart.config.options?.plugins?.tooltip?.callbacks?.title;
+            const labelAt = i => { try { return titleFn ? titleFn([{ dataIndex: i }]) : chart.data.labels[i]; } catch (e) { return chart.data.labels[i]; } };
+            const sets = chart.data.datasets;
+            const header = [titleFn ? "fecha" : "etiqueta", ...sets.map(d => d.label ?? "valor")];
+            const rows = (chart.data.labels ?? []).map((_, i) => [labelAt(i), ...sets.map(d => d.data[i])]);
+            downloadCSV(chartFileName(card, "csv"), header, rows);
+        }
+
+        document.querySelectorAll("#tabCal .chart-card").forEach(card => {
+            const tools = document.createElement("div");
+            tools.className = "chart-tools";
+            const png = document.createElement("button");
+            png.textContent = "⬇ PNG";
+            png.addEventListener("click", () => chartPNG(card));
+            const csv = document.createElement("button");
+            csv.textContent = "⬇ CSV";
+            csv.addEventListener("click", () => chartCSV(card));
+            tools.append(png, csv);
+            card.querySelector("h3").after(tools);
+        });
 
         // ===================== ANÁLISIS / GRÁFICAS =====================
         const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
@@ -1063,18 +1277,6 @@
                 options: { indexAxis: "y", responsive: true, maintainAspectRatio: false,
                            plugins: { legend: { display: false } }, scales: { x: axisCount } }
             });
-            const byType = {};
-            a.types.filter(t => sensors.includes(t.instrument.toLowerCase()))
-                   .forEach(t => { byType[t.type] = (byType[t.type] || 0) + t.count; });
-            const names = { 0: "Vegetación", 1: "Volcán activo", 2: "Fuente estática", 3: "Mar abierto" };
-            drawChart("chartType", {
-                type: "doughnut",
-                data: {
-                    labels: Object.keys(byType).map(t => names[t] ?? `Tipo ${t}`),
-                    datasets: [{ data: Object.values(byType), backgroundColor: ["#2e8b57", "#c0392b", "#7f8c8d", "#2a6fb0", "#9b59b6"] }]
-                },
-                options: { responsive: true, maintainAspectRatio: false }
-            });
         }
 
         function renderKpis(a, sensors, periodLabel) {
@@ -1139,6 +1341,314 @@
         sensorSelect.addEventListener("change", renderAnalysis);   // cambiar de sensor no requiere nueva consulta
     })();</script>
     <script>
+(() => {
+    const MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+    const MONTHS_FULL = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+    const SEM_COLOR = { verde: "#2e8b57", amarillo: "#e6b800", naranja: "#e67e22", rojo: "#c0392b", gris: "#9aa0a6" };
+    const SEM_NAME = { verde: "Verde", amarillo: "Amarillo", naranja: "Naranja", rojo: "Rojo", gris: "Sin referencia" };
+    // Umbrales del semáforo (veces la mediana histórica): editables aquí
+    const SEM_YELLOW = 1.25, SEM_ORANGE = 1.5, SEM_RED = 2;
+    const METRIC_NAME = { n: "detecciones", high: "detecciones de confianza alta", frp: "FRP total (MW)", area: "área de píxeles (km²)" };
+
+    const $ = id => document.getElementById(id);
+    const zoneSel = $("ser_zone"), countryInput = $("ser_country"), metricSel = $("ser_metric"), sensorSel = $("ser_sensor"), resSel = $("ser_res"),
+          colorSel = $("ser_color"), loadBtn = $("ser_load"), csvBtn = $("ser_csv"), statusBox = $("ser_status"),
+          summaryBox = $("ser_summary"), matrixBox = $("ser_matrix"), legendBox = $("ser_legend"), yearSel = $("ser_year"),
+          monthSel = $("ser_month"), cmpBox = $("ser_cmp");
+
+    const fmt = n => n == null ? "—" : Number(n).toLocaleString("es-MX", { maximumFractionDigits: 1 });
+    const compact = v => v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e4 ? Math.round(v / 1e3) + "k" : v >= 1e3 ? (v / 1e3).toFixed(1) + "k" : String(Math.round(v));
+    const iso = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;   // m: 0-11
+    const dim = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();                                 // días del mes
+    const countryParam = () => countryInput.value.trim().toLowerCase().split(/\s+/)
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join("_");
+
+    const quantile = (arr, q) => {
+        const a = arr.filter(v => v != null).sort((x, y) => x - y);
+        if (!a.length) return null;
+        const pos = (a.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+        return a[lo] + (a[hi] - a[lo]) * (pos - lo);
+    };
+    const median = arr => quantile(arr, 0.5);
+
+    // Semáforo según cuántas veces la mediana histórica es el valor observado
+    function semaforo(value, med) {
+        if (!(med > 0)) return value > 0 ? { key: "gris", label: "Sin referencia (mediana 0)", ratio: null } : { key: "verde", label: "Normal", ratio: 0 };
+        const r = value / med;
+        if (r < SEM_YELLOW) return { key: "verde", label: r < 0.75 ? "Por debajo de lo normal" : "Normal", ratio: r };
+        if (r < SEM_ORANGE) return { key: "amarillo", label: "Por encima de lo normal", ratio: r };
+        if (r < SEM_RED) return { key: "naranja", label: "Muy por encima", ratio: r };
+        return { key: "rojo", label: `Extremo (≥ ${SEM_RED}× la mediana)`, ratio: r };
+    }
+
+    const charts = {};
+    function drawChart(id, config) {
+        if (charts[id]) charts[id].destroy();
+        charts[id] = new Chart($(id), config);
+    }
+
+    let S = null;            // respuesta de la API (serie diaria)
+    let byDate = new Map();  // fecha -> valor de la métrica elegida
+    let ctx = null;          // primer / último mes con datos
+    let agg = null;          // matrices año × mes y año × semana
+    let zoneLabel = "";
+
+    // Última vista del mapa (el mapa oculto no sabe medirse, así que la guardamos mientras es visible)
+    let mapBounds = null;
+    try { mapBounds = map.getBounds(); map.on("moveend", () => { if (map.getSize().x > 0) mapBounds = map.getBounds(); }); } catch (e) { /* sin mapa */ }
+
+    // ---------- Preparación de datos ----------
+    function monthState(y, m) {
+        if (!S.years.includes(y)) return "nodata";
+        const k = y * 12 + m;
+        if (k < ctx.firstY * 12 + ctx.firstM || k > ctx.lastY * 12 + ctx.lastM) return "nodata";
+        return (y === ctx.lastY && m === ctx.lastM && ctx.lastD < dim(y, m)) ? "partial" : "ok";
+    }
+    const windowEnd = (y, m) => (y === ctx.lastY && m === ctx.lastM) ? ctx.lastD : dim(y, m);
+    const monthOfWeek = (y, w) => new Date(Date.UTC(y, 0, 1 + 7 * w)).getUTCMonth();
+
+    function sumWindow(y, m, D) {
+        let s = 0;
+        for (let d = 1; d <= D; d++) s += byDate.get(iso(y, m, d)) || 0;
+        return s;
+    }
+
+    function prepare() {
+        const key = metricSel.value;
+        byDate = new Map(S.date.map((d, i) => [d, S[key][i]]));
+        ctx = { firstY: +S.first_date.slice(0, 4), firstM: +S.first_date.slice(5, 7) - 1,
+                lastY: +S.last_date.slice(0, 4), lastM: +S.last_date.slice(5, 7) - 1, lastD: +S.last_date.slice(8, 10) };
+
+        const months = {}, weeks = {}, total = {}, partM = new Set(), partW = new Set();
+        S.years.forEach(y => {
+            months[y] = Array(12).fill(null);
+            weeks[y] = Array(53).fill(null);
+            total[y] = 0;
+            for (let m = 0; m < 12; m++) {
+                const st = monthState(y, m);
+                if (st === "nodata") continue;
+                months[y][m] = sumWindow(y, m, dim(y, m));
+                total[y] += months[y][m];
+                if (st === "partial") partM.add(`${y}:${m}`);
+            }
+            for (let w = 0; w < 53; w++) {
+                const start = new Date(Date.UTC(y, 0, 1 + 7 * w)).toISOString().slice(0, 10);
+                const end = new Date(Math.min(Date.UTC(y, 0, 7 + 7 * w), Date.UTC(y, 11, 31))).toISOString().slice(0, 10);
+                if (end < S.first_date || start > S.last_date) continue;
+                weeks[y][w] = 0;
+                if (end > S.last_date) partW.add(`${y}:${w}`);
+            }
+        });
+        S.date.forEach((d, i) => {
+            const y = +d.slice(0, 4);
+            if (!weeks[y]) return;
+            const doy = Math.round((Date.UTC(y, +d.slice(5, 7) - 1, +d.slice(8, 10)) - Date.UTC(y, 0, 1)) / 864e5);
+            const w = Math.min(52, Math.floor(doy / 7));
+            if (weeks[y][w] != null) weeks[y][w] += S[key][i];
+        });
+
+        const colMedian = (grid, cols, part) => Array.from({ length: cols }, (_, c) =>
+            median(S.years.filter(y => grid[y][c] != null && !part.has(`${y}:${c}`)).map(y => grid[y][c])));
+        agg = { months, weeks, total, partM, partW, medM: colMedian(months, 12, partM), medW: colMedian(weeks, 53, partW) };
+    }
+
+    function fillSelectors() {
+        const prevY = Number(yearSel.value), prevM = monthSel.value;
+        yearSel.innerHTML = [...S.years].reverse().map(y => `<option value="${y}">${y}</option>`).join("");
+        yearSel.value = S.years.includes(prevY) ? prevY : ctx.lastY;
+        monthSel.value = prevM && S.years.includes(prevY) ? prevM : ctx.lastM + 1;
+    }
+
+    // ---------- Matriz año × mes / semana ----------
+    function cellStyle(v, med, mode, cap) {
+        if (mode === "sem") {
+            const s = semaforo(v, med);
+            return `background:${SEM_COLOR[s.key]};color:${s.key === "amarillo" ? "#222" : "#fff"}`;
+        }
+        if (mode === "anom") {
+            if (!(med > 0)) return "background:#e0e0e0;color:#222";
+            const r = v / med;
+            if (r >= 1) { const t = Math.min(1, Math.log2(r) / Math.log2(3)); return `background:rgba(192,57,43,${0.12 + 0.88 * t});color:${t > 0.5 ? "#fff" : "#222"}`; }
+            const t = Math.min(1, 1 - r);
+            return `background:rgba(41,98,170,${0.12 + 0.88 * t});color:${t > 0.5 ? "#fff" : "#222"}`;
+        }
+        const t = Math.min(1, v / cap);
+        return v ? `background:rgba(226,88,34,${0.08 + 0.92 * t});color:${t > 0.55 ? "#fff" : "#222"}` : "background:#f1f1f1;color:#222";
+    }
+
+    function renderMatrix() {
+        if (!S) return;
+        const weeks = resSel.value === "weeks", cols = weeks ? 53 : 12;
+        const grid = weeks ? agg.weeks : agg.months, med = weeks ? agg.medW : agg.medM, part = weeks ? agg.partW : agg.partM;
+        const mode = colorSel.value;
+        const cap = Math.max(1e-9, quantile(S.years.flatMap(y => grid[y].filter(v => v != null)), 0.98) ?? 1);
+        const selY = Number(yearSel.value), selM = Number(monthSel.value) - 1;
+
+        let html = `<table class="matrix${weeks ? " weeks" : ""}"><thead><tr><th></th>` +
+            (weeks ? Array.from({ length: 53 }, (_, i) => `<th>${i % 4 === 0 ? i + 1 : ""}</th>`).join("") : MONTHS.map(m => `<th>${m}</th>`).join("")) +
+            (weeks ? "" : "<th>Total</th>") + "</tr></thead><tbody>";
+
+        S.years.forEach(y => {
+            html += `<tr><th>${y}</th>`;
+            for (let c = 0; c < cols; c++) {
+                const v = grid[y][c];
+                if (v == null) { html += '<td class="nodata"></td>'; continue; }
+                const sel = y === selY && (weeks ? monthOfWeek(y, c) === selM : c === selM);
+                const isPart = part.has(`${y}:${c}`);
+                const ratio = med[c] > 0 ? ` · ${fmt(v / med[c])}× la mediana (${fmt(med[c])})` : "";
+                const title = `${y} · ${weeks ? "semana " + (c + 1) : MONTHS_FULL[c]}: ${fmt(v)}${ratio}${isPart ? " · periodo incompleto" : ""}`;
+                html += `<td data-y="${y}" data-c="${c}" class="${sel ? "sel" : ""}${isPart ? " part" : ""}" style="${cellStyle(v, med[c], mode, cap)}" title="${title}">${weeks ? "" : compact(v)}</td>`;
+            }
+            if (!weeks) html += `<td class="total">${compact(agg.total[y])}</td>`;
+            html += "</tr>";
+        });
+        if (!weeks) html += `<tr class="median"><th>Mediana</th>${agg.medM.map(v => `<td class="total">${v == null ? "" : compact(v)}</td>`).join("")}<td class="total"></td></tr>`;
+        matrixBox.innerHTML = html + "</tbody></table>";
+
+        legendBox.innerHTML = mode === "sem"
+            ? ["verde", "amarillo", "naranja", "rojo"].map((k, i) => `<span class="chip" style="background:${SEM_COLOR[k]}"></span>${["< " + SEM_YELLOW + "×", SEM_YELLOW + "–" + SEM_ORANGE + "×", SEM_ORANGE + "–" + SEM_RED + "×", "≥ " + SEM_RED + "×"][i]}`).join(" &nbsp; ") + " la mediana de ese " + (weeks ? "número de semana" : "mes")
+            : mode === "anom"
+                ? '<span class="chip" style="background:rgba(41,98,170,.9)"></span> por debajo de la mediana &nbsp; <span class="chip" style="background:#fff;border:1px solid #bbb"></span> normal &nbsp; <span class="chip" style="background:rgba(192,57,43,.9)"></span> por encima (satura en 3×)'
+                : "Escala de color hasta el percentil 98 de la matriz. Borde discontinuo = periodo en curso (incompleto). Gris = sin datos.";
+    }
+
+    function renderSummary() {
+        const topYears = S.years.filter(y => agg.total[y] > 0).sort((a, b) => agg.total[b] - agg.total[a]).slice(0, 3).map(y => `${y} (${compact(agg.total[y])})`);
+        const topMonths = agg.medM.map((v, m) => [v, m]).filter(([v]) => v != null).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([v, m]) => `${MONTHS_FULL[m]} (${compact(v)})`);
+        summaryBox.innerHTML = `<b>Años con más actividad:</b> ${topYears.join(" · ")} &nbsp;|&nbsp; <b>Meses típicamente más activos (mediana):</b> ${topMonths.join(" · ")}`;
+    }
+
+    // ---------- Mes seleccionado vs. mediana histórica ----------
+    function renderCompare() {
+        if (!S) return;
+        const key = metricSel.value, name = METRIC_NAME[key];
+        const ty = Number(yearSel.value), tm = Number(monthSel.value) - 1;
+
+        if (monthState(ty, tm) === "nodata") {
+            cmpBox.innerHTML = `<h3>${MONTHS_FULL[tm]} ${ty}</h3><p>Sin datos para ese mes.</p>`;
+            return;
+        }
+        const D = windowEnd(ty, tm);                       // mes en curso: se compara "a la fecha" (días 1–D)
+        const usable = y => monthState(y, tm) !== "nodata" && !(monthState(y, tm) === "partial" && D > ctx.lastD);
+        const base = S.years.filter(y => y !== ty && usable(y));   // referencia: todos los demás años
+
+        const val = sumWindow(ty, tm, D);
+        const vals = base.map(y => sumWindow(y, tm, D));
+        const med = median(vals), p25 = quantile(vals, 0.25), p75 = quantile(vals, 0.75);
+        const rank = vals.length ? vals.filter(v => v <= val).length / vals.length : null;
+        const sem = semaforo(val, med);
+        const signed = n => n == null ? "—" : (n > 0 ? "+" : "") + fmt(n);
+        const rango = base.length ? `${Math.min(...base)}–${Math.max(...base)}` : "";
+
+        cmpBox.innerHTML = `
+            <h3>${MONTHS_FULL[tm]} ${ty}${D < dim(ty, tm) ? ` (días 1–${D}, mes en curso)` : ""}</h3>
+            <p><span class="badge" style="background:${SEM_COLOR[sem.key]};color:${sem.key === "amarillo" ? "#222" : "#fff"}">${SEM_NAME[sem.key]} · ${sem.label}</span></p>
+            ${base.length ? `<table class="kv">
+                <tr><td>${name}</td><td><b>${fmt(val)}</b></td></tr>
+                <tr><td>Mediana histórica (${base.length} años, ${rango})</td><td>${fmt(med)}</td></tr>
+                <tr><td>Rango típico P25 – P75</td><td>${fmt(p25)} – ${fmt(p75)}</td></tr>
+                <tr><td>Anomalía (valor − mediana)</td><td>${signed(val - med)}</td></tr>
+                <tr><td>Veces la mediana</td><td>${sem.ratio == null ? "—" : fmt(sem.ratio) + "×"}</td></tr>
+                <tr><td>Percentil entre los años de referencia</td><td>${rank == null ? "—" : Math.round(rank * 100) + " %"}</td></tr>
+            </table>` : "<p>No hay años de referencia para comparar.</p>"}
+            <p class="chart-note">Semáforo: verde &lt; ${SEM_YELLOW}× · amarillo ${SEM_YELLOW}–${SEM_ORANGE}× · naranja ${SEM_ORANGE}–${SEM_RED}× · rojo ≥ ${SEM_RED}× la mediana del mismo mes.</p>`;
+
+        // Gráfica: el mismo mes en todos los años, contra la mediana
+        const years = S.years.filter(usable);
+        const bars = years.map(y => sumWindow(y, tm, D));
+        drawChart("ser_chartMonth", {
+            type: "bar",
+            data: {
+                labels: years,
+                datasets: [
+                    { label: name, data: bars, backgroundColor: bars.map(v => SEM_COLOR[semaforo(v, med).key]),
+                      borderColor: years.map(y => y === ty ? "#000" : "transparent"), borderWidth: 2 },
+                    { type: "line", label: "Mediana histórica", data: years.map(() => med), borderColor: "#222", borderDash: [6, 4], pointRadius: 0, borderWidth: 2 }
+                ]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+        });
+
+    }
+
+    const renderAll = () => { renderMatrix(); renderSummary(); renderCompare(); };
+
+    // ---------- Carga ----------
+    async function load() {
+        const url = new URL(`${API_URL}/harmonized/series`);
+        addHFilters(url);
+        let zoneText = "todo el mundo";
+        if (sensorSel.value) url.searchParams.set("instrument", sensorSel.value);
+        if (zoneSel.value === "map") {
+            if (!mapBounds) { alert("No se pudo leer la vista del mapa."); return; }
+            let w = mapBounds.getWest(), e = mapBounds.getEast();
+            if (e - w >= 360) { w = -180; e = 180; }
+            else { w = ((w + 180) % 360 + 360) % 360 - 180; e = ((e + 180) % 360 + 360) % 360 - 180; }
+            const south = Math.max(-90, mapBounds.getSouth()), north = Math.min(90, mapBounds.getNorth());
+            [["south", south], ["north", north], ["west", w], ["east", e]].forEach(([k, v]) => url.searchParams.set(k, v.toFixed(3)));
+            zoneText = `vista del mapa (${south.toFixed(1)}° a ${north.toFixed(1)}° lat, ${w.toFixed(1)}° a ${e.toFixed(1)}° lon)`;
+        } else if (countryParam()) {
+            url.searchParams.set("country", countryParam());
+            zoneText = countryParam().replaceAll("_", " ");
+        }
+
+        statusBox.textContent = "Calculando la serie histórica (la primera vez puede tardar; después queda en memoria)...";
+        loadBtn.disabled = true;
+        try {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error(await apiError(r));
+            const data = await r.json();
+            if (!data.date.length) { S = null; matrixBox.innerHTML = ""; statusBox.textContent = "Sin detecciones para esa zona y filtros."; return; }
+            S = data;
+            zoneLabel = `${zoneText} · ${sensorSel.value || "MODIS + VIIRS"}`;
+            prepare();
+            fillSelectors();
+            renderAll();
+            statusBox.textContent = `Serie ${S.first_date} → ${S.last_date} · zona: ${zoneText} · sensor: ${sensorSel.value || "MODIS + VIIRS"} · ${S.date.length.toLocaleString("es-MX")} días con detecciones.` +
+                (sensorSel.value ? "" : " ⚠ Al mezclar sensores, los años con VIIRS salen inflados frente a los anteriores: el semáforo y las anomalías no son comparables entre épocas.");
+        } catch (e) {
+            statusBox.textContent = `No se pudo calcular la serie: ${e.message}`;
+            console.error(e);
+        } finally {
+            loadBtn.disabled = false;
+        }
+    }
+
+    // ---------- Eventos ----------
+    loadBtn.addEventListener("click", load);
+    metricSel.addEventListener("change", () => { if (S) { prepare(); renderAll(); } });
+    [resSel, colorSel, yearSel, monthSel].forEach(c => c.addEventListener("change", () => { if (S) renderAll(); }));
+    matrixBox.addEventListener("click", e => {
+        const td = e.target.closest("td[data-y]");
+        if (!td || !S) return;
+        const y = Number(td.dataset.y), c = Number(td.dataset.c);
+        yearSel.value = y;
+        monthSel.value = (resSel.value === "weeks" ? monthOfWeek(y, c) : c) + 1;
+        renderAll();
+    });
+
+    csvBtn.addEventListener("click", () => {
+        if (!S) { alert("Primero calcula la serie."); return; }
+        const weeks = resSel.value === "weeks";
+        const grid = weeks ? agg.weeks : agg.months;
+        const header = ["anio", ...(weeks ? Array.from({ length: 53 }, (_, i) => "semana_" + (i + 1)) : MONTHS_FULL.map(m => m.toLowerCase())), ...(weeks ? [] : ["total"])];
+        const rows = S.years.map(y => [y, ...grid[y], ...(weeks ? [] : [agg.total[y]])]);
+        rows.push(["mediana", ...(weeks ? agg.medW : agg.medM), ...(weeks ? [] : [""])]);
+        downloadCSV(`firescope_matriz_${metricSel.value}_${weeks ? "semanas" : "meses"}.csv`, header, rows);
+    });
+
+    const exportChart = (id, title, file, kind) => {
+        const chart = charts[id];
+        if (!chart) { alert("Primero calcula la serie."); return; }
+        if (kind === "png") exportChartPNG(chart, title, `${METRIC_NAME[metricSel.value]} · zona: ${zoneLabel}`, `${file}.png`);
+        else exportChartCSV(chart, `${file}.csv`, "anio");
+    };
+    $("ser_png1").addEventListener("click", () => exportChart("ser_chartMonth", "Mismo mes en cada año vs. mediana histórica", "firescope_mismo_mes", "png"));
+    $("ser_csv1").addEventListener("click", () => exportChart("ser_chartMonth", "", "firescope_mismo_mes", "csv"));
+})();
+
+</script>
+<script>
         const tabs = document.querySelectorAll(".tab");
         const panels = document.querySelectorAll(".tab-panel");
         tabs.forEach(t => t.addEventListener("click", () => {
@@ -1148,14 +1658,11 @@
         }));
 </script>
 <script>
-        document.getElementById("source").addEventListener("change", async () => {
-            if (isH() && H_YEARS === null) await loadHarmonizedYears();
-            document.body.classList.toggle("harmonized", isH());
-            document.getElementById("sourceHint").textContent = isH()
-                ? ""
-                : "";
+        // Carga los años armonizados disponibles y avisa a mapa y calendario para que llenen sus selectores
+        (async () => {
+            await loadHarmonizedYears();
             document.dispatchEvent(new Event("sourcechange"));
-        });
+        })();
     </script>
 </body>
 </html>

@@ -1,9 +1,13 @@
+import io
 import json
+import re
+from functools import lru_cache
 from pathlib import Path
 
 import duckdb
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import csv
 
 app = FastAPI(title="FireScope API")
@@ -384,6 +388,71 @@ def harmonized_years():
     return {"years": years}
 
 
+def h_years() -> list[int]:
+    return sorted(
+        int(p.name.split("=", 1)[1])
+        for p in HARMONIZED_PATH.glob("year=*")
+        if p.is_dir() and p.name.split("=", 1)[1].isdigit() and any(p.rglob("*.parquet"))
+    )
+
+
+@lru_cache(maxsize=16)
+def _series(extra: str, params: tuple) -> dict:
+    """Serie diaria de TODOS los años armonizados (conteo, confianza alta, FRP y área de píxel).
+    Se calcula una vez por combinación de filtros y se guarda en memoria."""
+    years = h_years()
+    if not years:
+        raise HTTPException(404, f"No harmonized datasets in {HARMONIZED_PATH}")
+    paths = ", ".join("'" + f.replace("'", "''") + "'" for y in years for f in h_files(y))
+    sql = f"""
+        SELECT CAST(d AS VARCHAR), COUNT(*), COUNT(*) FILTER (WHERE conf = 'high'),
+               COALESCE(SUM(frp), 0), COALESCE(SUM(pixel_area), 0)
+        FROM (SELECT *, CAST(acq_date AS DATE) AS d, {_conf_sql()} AS conf
+              FROM read_parquet([{paths}], union_by_name = true)
+              WHERE 1 = 1{extra})
+        GROUP BY d ORDER BY d
+    """
+    with duckdb.connect() as con:
+        rows = con.execute(sql, list(params)).fetchall()
+    return {
+        "years": years,
+        "first_date": rows[0][0] if rows else None,
+        "last_date": rows[-1][0] if rows else None,
+        "date": [r[0] for r in rows],
+        "n": [int(r[1]) for r in rows],
+        "high": [int(r[2]) for r in rows],
+        "frp": [round(float(r[3]), 1) for r in rows],
+        "area": [round(float(r[4]), 1) for r in rows],
+    }
+
+
+@app.get("/harmonized/series")
+def harmonized_series(
+    south: float | None = Query(None, description="Zona rectangular: latitud sur"),
+    north: float | None = None,
+    west: float | None = None,
+    east: float | None = None,
+    f: dict = Depends(h_filters),
+):
+    """Serie diaria completa (todos los años) para matrices año × mes/semana, anomalías,
+    semáforo y temporada acumulada. Filtra por país (h_filters) o por rectángulo."""
+    extra, params = f["sql"], list(f["params"])
+    box = [south, north, west, east]
+    if any(v is not None for v in box):
+        if None in box:
+            raise HTTPException(400, "Zone needs south, north, west and east")
+        if not -90 <= south <= north <= 90:
+            raise HTTPException(400, "Invalid latitude range")
+        extra += " AND latitude BETWEEN ? AND ?"
+        params += [south, north]
+        if west <= east:
+            extra += " AND longitude BETWEEN ? AND ?"
+        else:  # la zona cruza el antimeridiano
+            extra += " AND (longitude >= ? OR longitude <= ?)"
+        params += [west, east]
+    return _series(extra, tuple(params))
+
+
 @app.get("/harmonized/fires")
 def harmonized_fires(
     year: int,
@@ -420,6 +489,56 @@ def harmonized_fires(
         "offset": offset,
         "data": records,
     }
+
+
+@app.get("/harmonized/fires.csv")
+def harmonized_fires_csv(
+    year: int,
+    month: int | None = Query(None, description="1-12. Si se omite, todo el año"),
+    f: dict = Depends(h_filters),
+):
+    """Descarga en CSV todas las detecciones de la consulta (sin paginar), transmitidas por bloques."""
+    _check_period(year, month)
+    src = h_source(year)
+    start, end = period_dates(year, month)
+    sql = (
+        f"SELECT * REPLACE (CAST(CAST(acq_date AS DATE) AS VARCHAR) AS acq_date) FROM {src} "
+        f"WHERE acq_date >= ? AND acq_date < ?{f['sql']} ORDER BY acq_date, acq_time"
+    )
+    params = [start, end] + f["params"]
+
+    def stream():
+        con = duckdb.connect()
+        try:
+            cur = con.execute(sql, params)
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([c[0] for c in cur.description])
+            yield "\ufeff" + buf.getvalue()          # BOM para que Excel respete los acentos
+            while True:
+                rows = cur.fetchmany(20000)
+                if not rows:
+                    break
+                buf.seek(0)
+                buf.truncate(0)
+                writer.writerows(rows)
+                yield buf.getvalue()
+        finally:
+            con.close()
+
+    parts = ["firescope", str(year)]
+    if month:
+        parts.append(f"{month:02d}")
+    if f["country"]:
+        parts.append(re.sub(r"[^A-Za-z0-9_-]", "", f["country"]))
+    if f["instrument"]:
+        parts.append(f["instrument"])
+    filename = "_".join(parts) + ".csv"
+    return StreamingResponse(
+        stream(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/harmonized/calendar")
