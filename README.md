@@ -27,7 +27,7 @@ python -m venv venv
 venv\Scripts\activate
 pip install fastapi "uvicorn[standard]" duckdb pandas
 
-2.Download Data
+  2.Download Data
 
 The fire data in this repository is incomplete due to github's restrictions, download it from https://drive.google.com/drive/folders/11ekA7Tj2lJCB6KWbsgz-R0VySxQEfyRU?usp=sharing and place it under the "data" folder.
 
