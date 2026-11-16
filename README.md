@@ -1,4 +1,4 @@
-# MODIS-VIIRS-hostspots
+# MODIS-VIIRS-hotspots
 Visual Fire
 
 Visual Fire is a web tool for exploring satellite fire detections from 2000 to today and for judging whether a given month or fire season is unusual. It runs on a harmonized MODIS + VIIRS dataset (one common schema for both sensors) served by a FastAPI + DuckDB backend, with a single-page front end.
