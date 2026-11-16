@@ -27,7 +27,11 @@ python -m venv venv
 venv\Scripts\activate
 pip install fastapi "uvicorn[standard]" duckdb pandas
 
-2. Start the API (terminal 1)
+2.Download Data
+
+The fire data in this repository is incomplete due to github's restrictions, download it from https://drive.google.com/drive/folders/11ekA7Tj2lJCB6KWbsgz-R0VySxQEfyRU?usp=sharing and place it under the "data" folder.
+
+3. Start the API (terminal 1)
 
 powershell
 cd backend
@@ -36,13 +40,13 @@ uvicorn app.main:app --reload
 
 The API runs at http://127.0.0.1:8000 and its interactive documentation at http://127.0.0.1:8000/docs.
 
-3. Serve the front end (terminal 2). Go to the folder that contains index.html (visual_fire in our setup):
+4. Serve the front end (terminal 2). Go to the folder that contains index.html (visual_fire in our setup):
 
 powershell
 cd visual_fire
 python -m http.server 5500
 
-4. Open the app in a web browser at http://localhost:5500
+5. Open the app in a web browser at http://localhost:5500
 
 The API only accepts requests from http://localhost:5500 and http://127.0.0.1:5500, so the front end must be served on port 5500.
 
